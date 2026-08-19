@@ -7,11 +7,6 @@ import (
 	"sort"
 )
 
-type BasinScore struct {
-	Basin uint64
-	Score float64
-}
-
 type Candidate struct {
 	ID    [32]byte
 	Basin uint64
@@ -55,15 +50,25 @@ type Verifier struct {
 	Signature []byte
 }
 
+func SigningMessage(root [32]byte) []byte {
+	msg := make([]byte, 0, len("nomad-object-v1")+len(root))
+	msg = append(msg, []byte("nomad-object-v1")...)
+	msg = append(msg, root[:]...)
+	return msg
+}
+
 func (v Verifier) Verify(data []byte) error {
 	if len(v.PublicKey) != ed25519.PublicKeySize {
 		return errors.New("invalid public key")
+	}
+	if len(v.Signature) != ed25519.SignatureSize {
+		return errors.New("invalid signature length")
 	}
 	root := sha256.Sum256(data)
 	if root != v.Root {
 		return errors.New("content hash mismatch")
 	}
-	if !ed25519.Verify(v.PublicKey, root[:], v.Signature) {
+	if !ed25519.Verify(v.PublicKey, SigningMessage(root), v.Signature) {
 		return errors.New("signature verification failed")
 	}
 	return nil

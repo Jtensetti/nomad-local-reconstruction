@@ -1,23 +1,22 @@
 # nomad-local-reconstruction
 
-Local-only candidate ranking, reconstruction orchestration and exact object verification for Nomad research.
+Local candidate ordering, decoder orchestration and exact-byte verification for the Nomad experiments.
 
-The package deliberately accepts a `Decoder` interface instead of depending on a particular network-coding repository. That keeps local selection isolated and lets integration tests inject RLNC, erasure coding or other decoders without changing the security boundary.
+The package performs no network I/O. It accepts a small decoder interface so the verification layer does not depend on a particular coding implementation.
 
-Implemented:
+## Implemented
 
-- local opaque-candidate ranking by basin proximity,
-- decoder interface,
-- reconstruction threshold handling,
-- SHA-256 root verification,
-- Ed25519 publisher-signature verification,
-- tamper tests.
+- local candidate ordering by basin distance, with caller-provided score as a tie-breaker,
+- decoder readiness/orchestration,
+- SHA-256 commitment checking,
+- Ed25519 verification over `nomad-object-v1 || content_hash`,
+- rejection of hash/signature tampering and signatures from the wrong domain.
 
-`Rank` and `Reconstruct` are local operations: no method emits a query or feedback to the network.
+## Scope limits
+
+The verifier assumes the caller already knows the expected public key and content commitment. It does not define SiteID resolution, key rotation, revocation, object metadata, coded-symbol authentication or pollution resistance. A malicious fragment set can still waste decoder work or prevent reconstruction before exact-byte verification is reached.
 
 ```bash
-go test ./...
 go test -race ./...
 go vet ./...
-go run ./cmd/reconstruct-demo
 ```

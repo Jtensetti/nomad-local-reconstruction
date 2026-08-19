@@ -36,7 +36,7 @@ func TestVerifiedLocalReconstruction(t *testing.T) {
 	}
 	data := []byte("exact deterministic content")
 	root := sha256.Sum256(data)
-	sig := ed25519.Sign(priv, root[:])
+	sig := ed25519.Sign(priv, SigningMessage(root))
 	d := &exactDecoder{want: 2}
 	got, err := Reconstruct(d, [][]byte{data[:10], data[10:]}, Verifier{Root: root, PublicKey: pub, Signature: sig})
 	if err != nil {
@@ -48,10 +48,13 @@ func TestVerifiedLocalReconstruction(t *testing.T) {
 }
 
 func TestTamperRejected(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	data := []byte("content")
 	root := sha256.Sum256(data)
-	sig := ed25519.Sign(priv, root[:])
+	sig := ed25519.Sign(priv, SigningMessage(root))
 	d := &exactDecoder{want: 1}
 	if _, err := Reconstruct(d, [][]byte{[]byte("tampered")}, Verifier{Root: root, PublicKey: pub, Signature: sig}); err == nil {
 		t.Fatal("expected verification error")
@@ -63,5 +66,18 @@ func TestRankLocal(t *testing.T) {
 	r := Rank(c, 0x00)
 	if r[0].Basin != 0x00 || r[1].Basin != 0x01 {
 		t.Fatalf("unexpected rank: %#v", r)
+	}
+}
+
+func TestRawHashSignatureIsRejected(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("content")
+	root := sha256.Sum256(data)
+	legacyStyle := ed25519.Sign(priv, root[:])
+	if err := (Verifier{Root: root, PublicKey: pub, Signature: legacyStyle}).Verify(data); err == nil {
+		t.Fatal("expected signature without Nomad domain separation to be rejected")
 	}
 }
