@@ -40,7 +40,7 @@ func walkValue(decoder *json.Decoder, depth int) error {
 	case '{':
 		seen := make(map[string]struct{})
 		for count := 0; decoder.More(); count++ {
-			if count > maxJSONElements {
+			if count >= maxJSONElements {
 				return errors.New("JSON object has too many members")
 			}
 			keyToken, err := decoder.Token()
@@ -61,7 +61,7 @@ func walkValue(decoder *json.Decoder, depth int) error {
 		}
 	case '[':
 		for count := 0; decoder.More(); count++ {
-			if count > maxJSONElements {
+			if count >= maxJSONElements {
 				return errors.New("JSON array has too many elements")
 			}
 			if err := walkValue(decoder, depth+1); err != nil {

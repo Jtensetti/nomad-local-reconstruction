@@ -16,8 +16,12 @@ var ErrEquivocation = errors.New("site descriptor equivocation")
 type EquivocationProof struct {
 	SiteID   ID
 	Sequence uint64
-	First    []byte
-	Second   []byte
+	// Prefix is the accepted chain from genesis up to Sequence-1, which a
+	// third party needs in order to judge whether either branch is
+	// authorized. It is empty exactly when Sequence is zero.
+	Prefix [][]byte
+	First  []byte
+	Second []byte
 }
 
 func (proof EquivocationProof) Error() string {
@@ -71,6 +75,14 @@ func (chain *Chain) Append(encoded []byte) (Verified, error) {
 	if err != nil {
 		return Verified{}, err
 	}
+	// Pin the site first. A genesis descriptor only proves it commits to its
+	// OWN derived SiteID, so without this an unprivileged attacker could
+	// hand a victim a perfectly valid genesis for their own unrelated site
+	// and have it recorded as equivocation, permanently bricking the victim.
+	// A descriptor for another site is simply not part of this chain.
+	if descriptor.SiteID != hex.EncodeToString(chain.siteID[:]) {
+		return Verified{}, errors.New("descriptor belongs to a different site")
+	}
 	digest, err := Digest(descriptor)
 	if err != nil {
 		return Verified{}, err
@@ -96,8 +108,12 @@ func (chain *Chain) Append(encoded []byte) (Verified, error) {
 		if _, err := VerifyDescriptor(descriptor, previous); err != nil {
 			return Verified{}, fmt.Errorf("superseded or invalid site descriptor rejected: %w", err)
 		}
+		prefix := make([][]byte, 0, index)
+		for _, ancestor := range chain.encoded[:index] {
+			prefix = append(prefix, append([]byte(nil), ancestor...))
+		}
 		proof := &EquivocationProof{
-			SiteID: chain.siteID, Sequence: descriptor.Sequence,
+			SiteID: chain.siteID, Sequence: descriptor.Sequence, Prefix: prefix,
 			First:  append([]byte(nil), chain.encoded[index]...),
 			Second: append([]byte(nil), encoded...),
 		}
@@ -157,30 +173,54 @@ func (chain *Chain) DescriptorByDigest(digest [32]byte) (Verified, bool) {
 }
 
 // VerifyEquivocationProof lets a third party check a proof independently.
+//
+// Parsing both branches is not enough: a proof that only checks shape can be
+// fabricated against any honest site, which would turn split-view detection
+// into an attacker-controlled kill switch. Both branches must therefore be
+// shown to be genuinely authorized, which for a non-genesis sequence
+// requires the ancestor chain back to genesis. Prefix carries it: prefix[0]
+// must be the site's genesis and each entry must chain to the next.
 func VerifyEquivocationProof(proof EquivocationProof) error {
-	first, err := Decode(proof.First)
-	if err != nil {
-		return fmt.Errorf("first descriptor: %w", err)
+	if len(proof.Prefix) != int(proof.Sequence) {
+		return fmt.Errorf("proof needs the %d ancestor descriptors back to genesis", proof.Sequence)
 	}
-	second, err := Decode(proof.Second)
-	if err != nil {
-		return fmt.Errorf("second descriptor: %w", err)
+	var previous *Verified
+	for index, encoded := range proof.Prefix {
+		verified, err := Verify(encoded, previous)
+		if err != nil {
+			return fmt.Errorf("proof ancestor %d: %w", index, err)
+		}
+		if index == 0 {
+			derived, err := DeriveID(verified.Descriptor)
+			if err != nil {
+				return err
+			}
+			if derived != proof.SiteID {
+				return errors.New("proof genesis does not derive the claimed site")
+			}
+		}
+		if verified.SiteID != proof.SiteID {
+			return errors.New("proof ancestor belongs to another site")
+		}
+		copyVerified := verified
+		previous = &copyVerified
 	}
-	if first.Sequence != proof.Sequence || second.Sequence != proof.Sequence {
+
+	first, err := Verify(proof.First, previous)
+	if err != nil {
+		return fmt.Errorf("first descriptor is not a valid competitor: %w", err)
+	}
+	second, err := Verify(proof.Second, previous)
+	if err != nil {
+		return fmt.Errorf("second descriptor is not a valid competitor: %w", err)
+	}
+	if first.Descriptor.Sequence != proof.Sequence || second.Descriptor.Sequence != proof.Sequence {
 		return errors.New("proof descriptors do not share the claimed sequence")
 	}
-	if first.SiteID != second.SiteID || first.SiteID != hex.EncodeToString(proof.SiteID[:]) {
+	if first.SiteID != proof.SiteID || second.SiteID != proof.SiteID {
 		return errors.New("proof descriptors do not share the claimed site")
 	}
-	firstDigest, err := Digest(first)
-	if err != nil {
-		return err
-	}
-	secondDigest, err := Digest(second)
-	if err != nil {
-		return err
-	}
-	if firstDigest == secondDigest {
+	if first.Digest == second.Digest {
 		return errors.New("proof descriptors are identical")
 	}
 	return nil

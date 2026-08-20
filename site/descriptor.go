@@ -30,6 +30,12 @@ const (
 	RoleRecovery = byte(0x02)
 
 	maxKeys = 8
+	// maxRevokedKeys is deliberately far larger than maxKeys. Revocation is
+	// absorbing, so every ancestor's revocations are carried forward; sharing
+	// the active-key bound would make a site permanently unrotatable after
+	// eight revocations, and would let a transient signing majority burn the
+	// budget to disable the site for good.
+	maxRevokedKeys = 1024
 )
 
 // ID is a persistent publisher identity: a domain-separated commitment to
@@ -114,7 +120,7 @@ func canonicalBytes(descriptor Descriptor, zeroSiteID bool) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("signing keys: %w", err)
 	}
-	revoked, err := decodeKeyList(descriptor.RevokedKeys)
+	revoked, err := decodeBoundedKeyList(descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return nil, fmt.Errorf("revoked keys: %w", err)
 	}
@@ -160,6 +166,9 @@ func DeriveID(descriptor Descriptor) (ID, error) {
 	}
 	if descriptor.PreviousDescriptorDigest != zeroDigestHex {
 		return ID{}, errors.New("genesis descriptor must carry the zero previous digest")
+	}
+	if err := validateStructure(descriptor); err != nil {
+		return ID{}, err
 	}
 	core, err := canonicalBytes(descriptor, true)
 	if err != nil {
@@ -326,9 +335,15 @@ func VerifyDescriptor(descriptor Descriptor, previous *Verified) (Verified, erro
 				return Verified{}, err
 			}
 		}
+		if err := checkRecoveryPolicyAuthority(descriptor, *previous); err != nil {
+			return Verified{}, err
+		}
 	}
 
 	if err := verifyAuthorizations(descriptor, digest, previous); err != nil {
+		return Verified{}, err
+	}
+	if err := requirePossessionOfNewKeys(descriptor, digest, previous); err != nil {
 		return Verified{}, err
 	}
 	return Verified{Descriptor: descriptor, Digest: digest, SiteID: id, ValidFrom: validFrom, ValidUntil: validUntil}, nil
@@ -342,7 +357,7 @@ func validateStructure(descriptor Descriptor) error {
 	if len(signing) == 0 {
 		return errors.New("descriptor requires at least one signing key")
 	}
-	revoked, err := decodeKeyList(descriptor.RevokedKeys)
+	revoked, err := decodeBoundedKeyList(descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return fmt.Errorf("revoked keys: %w", err)
 	}
@@ -385,11 +400,11 @@ func validateStructure(descriptor Descriptor) error {
 // key revoked by an ancestor stays revoked, and no revoked key may reappear
 // as an active signing or recovery key.
 func checkRevocationIsAbsorbing(descriptor Descriptor, previous Verified) error {
-	previousRevoked, err := decodeKeyList(previous.Descriptor.RevokedKeys)
+	previousRevoked, err := decodeBoundedKeyList(previous.Descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return err
 	}
-	revoked, err := decodeKeyList(descriptor.RevokedKeys)
+	revoked, err := decodeBoundedKeyList(descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return err
 	}
@@ -414,12 +429,130 @@ func checkRevocationIsAbsorbing(descriptor Descriptor, previous Verified) error 
 	return nil
 }
 
+// requirePossessionOfNewKeys makes every key that first appears in this
+// descriptor prove it is held. Genesis already requires this of all its
+// keys; without the same rule on later transitions a publisher could
+// install a signing or recovery key nobody controls, which for a recovery
+// key is a one-shot permanent brick of the site.
+func requirePossessionOfNewKeys(descriptor Descriptor, digest [32]byte, previous *Verified) error {
+	if previous == nil {
+		return nil
+	}
+	known := make(map[string]struct{})
+	for _, key := range previous.Descriptor.SigningKeys {
+		known[key] = struct{}{}
+	}
+	for _, key := range previous.Descriptor.Recovery.Keys {
+		known[key] = struct{}{}
+	}
+	check := func(keys []string, role string, roleByte byte) error {
+		for _, encoded := range keys {
+			if _, seen := known[encoded]; seen {
+				continue
+			}
+			key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+			if err != nil {
+				return errors.New("invalid key encoding")
+			}
+			proven := false
+			for _, authorization := range descriptor.Authorizations {
+				if authorization.Role != role || authorization.Key != encoded {
+					continue
+				}
+				signature, err := decodeBase64(authorization.Signature, ed25519.SignatureSize)
+				if err != nil {
+					continue
+				}
+				if ed25519.Verify(ed25519.PublicKey(key), AuthorizationMessage(digest, roleByte, key), signature) {
+					proven = true
+					break
+				}
+			}
+			if !proven {
+				return fmt.Errorf("newly introduced %s key must prove possession", role)
+			}
+		}
+		return nil
+	}
+	if err := check(descriptor.SigningKeys, "signing", RoleSigning); err != nil {
+		return err
+	}
+	return check(descriptor.Recovery.Keys, "recovery", RoleRecovery)
+}
+
+// checkRecoveryPolicyAuthority keeps online publishing authority from
+// reaching offline recovery authority. A rotation authorized purely by
+// signing keys must leave the recovery policy byte-identical; otherwise a
+// stolen signing majority could install its own recovery set, revoke the
+// real one, and own the site permanently. Only a transition that carries
+// the previous recovery threshold in recovery-role authorizations may change
+// the policy or revoke a currently active recovery key.
+func checkRecoveryPolicyAuthority(descriptor Descriptor, previous Verified) error {
+	unchanged := descriptor.Recovery.Threshold == previous.Descriptor.Recovery.Threshold &&
+		len(descriptor.Recovery.Keys) == len(previous.Descriptor.Recovery.Keys)
+	if unchanged {
+		for index := range descriptor.Recovery.Keys {
+			if descriptor.Recovery.Keys[index] != previous.Descriptor.Recovery.Keys[index] {
+				unchanged = false
+				break
+			}
+		}
+	}
+	revoked, err := decodeBoundedKeyList(descriptor.RevokedKeys, maxRevokedKeys)
+	if err != nil {
+		return err
+	}
+	previousRecovery, err := decodeKeyList(previous.Descriptor.Recovery.Keys)
+	if err != nil {
+		return err
+	}
+	revokesRecovery := false
+	for _, key := range previousRecovery {
+		if containsKey(revoked, key) {
+			revokesRecovery = true
+			break
+		}
+	}
+	if unchanged && !revokesRecovery {
+		return nil
+	}
+	digest, err := Digest(descriptor)
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, encoded := range previous.Descriptor.Recovery.Keys {
+		key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+		if err != nil {
+			return errors.New("invalid previous recovery key")
+		}
+		for _, authorization := range descriptor.Authorizations {
+			if authorization.Role != "recovery" || authorization.Key != encoded {
+				continue
+			}
+			signature, err := decodeBase64(authorization.Signature, ed25519.SignatureSize)
+			if err != nil {
+				continue
+			}
+			if ed25519.Verify(ed25519.PublicKey(key), AuthorizationMessage(digest, RoleRecovery, key), signature) {
+				count++
+				break
+			}
+		}
+	}
+	if count < int(previous.Descriptor.Recovery.Threshold) {
+		return fmt.Errorf("changing the recovery policy requires %d previous recovery authorizations, got %d",
+			previous.Descriptor.Recovery.Threshold, count)
+	}
+	return nil
+}
+
 func requireRecoveryRevokesPriorSigning(descriptor Descriptor, previous Verified) error {
 	previousSigning, err := decodeKeyList(previous.Descriptor.SigningKeys)
 	if err != nil {
 		return err
 	}
-	revoked, err := decodeKeyList(descriptor.RevokedKeys)
+	revoked, err := decodeBoundedKeyList(descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return err
 	}
@@ -432,7 +565,12 @@ func requireRecoveryRevokesPriorSigning(descriptor Descriptor, previous Verified
 }
 
 func verifyAuthorizations(descriptor Descriptor, digest [32]byte, previous *Verified) error {
-	verified := make(map[string]byte, len(descriptor.Authorizations))
+	// Bound the work before any signature verification: an unbounded list
+	// would let attacker-supplied bytes buy arbitrary Ed25519 verifications.
+	if len(descriptor.Authorizations) > 4*maxKeys {
+		return errors.New("too many authorizations")
+	}
+	verified := make(map[string]struct{}, len(descriptor.Authorizations))
 	for _, authorization := range descriptor.Authorizations {
 		role, err := roleByte(authorization.Role)
 		if err != nil {
@@ -449,22 +587,30 @@ func verifyAuthorizations(descriptor Descriptor, digest [32]byte, previous *Veri
 		if !ed25519.Verify(ed25519.PublicKey(key), AuthorizationMessage(digest, role, key), signature) {
 			return fmt.Errorf("invalid %s authorization for key %s", authorization.Role, authorization.Key)
 		}
-		identifier := authorization.Role + ":" + authorization.Key
+		identifier := authorization.Role + ":" + string(key)
 		if _, exists := verified[identifier]; exists {
 			return errors.New("duplicate authorization")
 		}
-		verified[identifier] = role
+		verified[identifier] = struct{}{}
 	}
 
 	switch descriptor.Transition {
 	case TransitionGenesis:
-		for _, key := range descriptor.SigningKeys {
-			if _, ok := verified["signing:"+key]; !ok {
+		for _, encoded := range descriptor.SigningKeys {
+			key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+			if err != nil {
+				return errors.New("invalid signing key")
+			}
+			if _, ok := verified["signing:"+string(key)]; !ok {
 				return errors.New("genesis requires a self-signature from every signing key")
 			}
 		}
-		for _, key := range descriptor.Recovery.Keys {
-			if _, ok := verified["recovery:"+key]; !ok {
+		for _, encoded := range descriptor.Recovery.Keys {
+			key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+			if err != nil {
+				return errors.New("invalid recovery key")
+			}
+			if _, ok := verified["recovery:"+string(key)]; !ok {
 				return errors.New("genesis requires a self-signature from every recovery key")
 			}
 		}
@@ -483,10 +629,14 @@ func verifyAuthorizations(descriptor Descriptor, digest [32]byte, previous *Veri
 	}
 }
 
-func requireSigningMajority(verified map[string]byte, previous Verified) error {
+func requireSigningMajority(verified map[string]struct{}, previous Verified) error {
 	count := 0
-	for _, key := range previous.Descriptor.SigningKeys {
-		if _, ok := verified["signing:"+key]; ok {
+	for _, encoded := range previous.Descriptor.SigningKeys {
+		key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+		if err != nil {
+			return errors.New("invalid previous signing key")
+		}
+		if _, ok := verified["signing:"+string(key)]; ok {
 			count++
 		}
 	}
@@ -497,10 +647,14 @@ func requireSigningMajority(verified map[string]byte, previous Verified) error {
 	return nil
 }
 
-func requireRecoveryThreshold(verified map[string]byte, previous Verified) error {
+func requireRecoveryThreshold(verified map[string]struct{}, previous Verified) error {
 	count := 0
-	for _, key := range previous.Descriptor.Recovery.Keys {
-		if _, ok := verified["recovery:"+key]; ok {
+	for _, encoded := range previous.Descriptor.Recovery.Keys {
+		key, err := decodeBase64(encoded, ed25519.PublicKeySize)
+		if err != nil {
+			return errors.New("invalid previous recovery key")
+		}
+		if _, ok := verified["recovery:"+string(key)]; ok {
 			count++
 		}
 	}
@@ -521,7 +675,7 @@ func (v Verified) AuthorizesKey(key []byte) bool {
 	if err != nil {
 		return false
 	}
-	revoked, err := decodeKeyList(v.Descriptor.RevokedKeys)
+	revoked, err := decodeBoundedKeyList(v.Descriptor.RevokedKeys, maxRevokedKeys)
 	if err != nil {
 		return false
 	}
@@ -529,7 +683,11 @@ func (v Verified) AuthorizesKey(key []byte) bool {
 }
 
 func decodeKeyList(encoded []string) ([][]byte, error) {
-	if len(encoded) > maxKeys {
+	return decodeBoundedKeyList(encoded, maxKeys)
+}
+
+func decodeBoundedKeyList(encoded []string, limit int) ([][]byte, error) {
+	if len(encoded) > limit {
 		return nil, errors.New("key list is too long")
 	}
 	keys := make([][]byte, 0, len(encoded))
@@ -574,10 +732,19 @@ func validateCanonicalTime(encoded string) error {
 	return nil
 }
 
+// decodeBase64 requires the exact canonical encoding. Go's Strict() mode
+// rejects non-zero padding bits but still ignores CR and LF inside the
+// input, which would let one key have many wire spellings: the descriptor
+// would keep its digest and SiteID while its bytes differed, and a stricter
+// second implementation would disagree with this one. Re-encoding and
+// comparing settles it, the same discipline decodeHex already uses.
 func decodeBase64(encoded string, size int) ([]byte, error) {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil || len(decoded) != size {
 		return nil, errors.New("invalid base64 or length")
+	}
+	if base64.StdEncoding.EncodeToString(decoded) != encoded {
+		return nil, errors.New("base64 is not in canonical form")
 	}
 	return decoded, nil
 }

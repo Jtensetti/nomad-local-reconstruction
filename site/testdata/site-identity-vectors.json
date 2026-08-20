@@ -84,6 +84,11 @@
           "role": "signing",
           "key": "PAiKczV5ucTOuvK/nBWg3twi5CQjxcRU2s8CqWc3Nhc=",
           "signature": "QHJU62HGGlrdvED34nD3CFIfrSwigXLvhlR2ejfENpniECI3f0aDYIc8nP8Ynul4Prp3Fd/tog5etTYKDpZnCA=="
+        },
+        {
+          "role": "signing",
+          "key": "7qWqXCqApajOVQRrAamckPfa+gMU+Ts4DfplpBz6kIo=",
+          "signature": "m2+0F1Nh5lFSugC0SXf8uCPhJBDYRpe2o0FL9tu+2U8mwrY7Ew0cEZfEz3JCGLJmZ3DCXJwPvW/phQ6NjLyQCA=="
         }
       ]
     },

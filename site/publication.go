@@ -48,6 +48,10 @@ const (
 	PublisherUnknown
 	// PublisherInvalid means an identity claim was made and failed.
 	PublisherInvalid
+	// ObjectInvalid means the bytes are not the signed object. No identity
+	// claim is reached, so this must not be rendered as "not from the site
+	// you asked for": the content never got far enough to claim anything.
+	ObjectInvalid
 )
 
 func (s State) String() string {
@@ -60,6 +64,8 @@ func (s State) String() string {
 		return "PUBLISHER_UNKNOWN"
 	case PublisherInvalid:
 		return "PUBLISHER_INVALID"
+	case ObjectInvalid:
+		return "OBJECT_INVALID"
 	default:
 		return "UNKNOWN"
 	}
@@ -183,20 +189,33 @@ func DecodePublication(encoded []byte) (Publication, error) {
 	return publication, nil
 }
 
+func headRevoked(head Verified, key []byte) bool {
+	revoked, err := decodeBoundedKeyList(head.Descriptor.RevokedKeys, maxRevokedKeys)
+	if err != nil {
+		return true
+	}
+	return containsKey(revoked, key)
+}
+
 // Resolve decides the identity state for one verified object.
 //
 // intended is the SiteID the user actually asked for; chain is the client's
 // accepted descriptor chain for that site, or nil if none is cached;
 // publication is the claim accompanying the object, or nil if absent.
-// manifest and data must already have passed exact object verification.
 //
 // The function performs no I/O and takes no query as input.
 func Resolve(intended ID, chain *Chain, publication *Publication, manifest reconstruct.Manifest, data []byte, now time.Time) (State, error) {
 	if err := manifest.VerifyObject(data); err != nil {
-		return PublisherInvalid, fmt.Errorf("object verification failed: %w", err)
+		return ObjectInvalid, fmt.Errorf("object verification failed: %w", err)
 	}
 	if publication == nil {
 		return ObjectVerified, nil
+	}
+	// Judge what can be judged without a chain first. A structurally broken
+	// claim is invalid, not merely unknown; only a well-formed claim whose
+	// chain is genuinely not cached yet reports absence.
+	if _, err := publicationCanonicalBytes(*publication); err != nil {
+		return PublisherInvalid, fmt.Errorf("malformed publication: %w", err)
 	}
 	if chain == nil {
 		return PublisherUnknown, errors.New("no accepted descriptor chain for this site")
@@ -254,20 +273,31 @@ func Resolve(intended ID, chain *Chain, publication *Publication, manifest recon
 	copy(descriptorDigest[:], digestBytes)
 	descriptor, found := chain.DescriptorByDigest(descriptorDigest)
 	if !found {
-		return PublisherUnknown, errors.New("publication names a descriptor this client has not accepted")
+		// The client holds a verified chain for the site the user asked for
+		// and that chain cannot contain the named descriptor. That is a
+		// contradicted claim, not an absent one.
+		return PublisherInvalid, errors.New("publication names a descriptor that is not in this site's accepted chain")
 	}
 	head, err := chain.Head()
 	if err != nil {
 		return PublisherInvalid, err
 	}
-	if descriptor.Digest != head.Digest {
-		return PublisherInvalid, errors.New("publication names a superseded descriptor")
+	// A routine rotation must not turn a publisher's back catalogue into
+	// failed identity claims. The authorizing descriptor may be an accepted
+	// ancestor, provided it authorized the key at the time of publication
+	// and the head has not since revoked that key.
+	publishedAt, err := time.Parse(time.RFC3339, publication.PublishedAt)
+	if err != nil {
+		return PublisherInvalid, errors.New("invalid publication timestamp")
 	}
-	if !descriptor.ActiveAt(now) {
-		return PublisherInvalid, errors.New("authorizing descriptor is outside its validity window")
+	if !descriptor.ActiveAt(publishedAt) {
+		return PublisherInvalid, errors.New("authorizing descriptor was not in its validity window when published")
 	}
 	if !descriptor.AuthorizesKey(signingKey) {
 		return PublisherInvalid, errors.New("publication signing key is not active in the authorizing descriptor")
+	}
+	if headRevoked(head, signingKey) {
+		return PublisherInvalid, errors.New("publication signing key has been revoked")
 	}
 	return PublisherVerified, nil
 }

@@ -121,6 +121,25 @@ func (f *siteFixture) successor(t *testing.T, previous Verified, transition stri
 		}
 		descriptor.Authorizations = append(descriptor.Authorizations, authorization)
 	}
+	// Every newly introduced key proves possession, as a real publisher tool
+	// would: a key nobody holds must not be installable.
+	known := map[string]bool{}
+	for _, key := range previous.Descriptor.SigningKeys {
+		known[key] = true
+	}
+	for _, key := range previous.Descriptor.Recovery.Keys {
+		known[key] = true
+	}
+	for _, key := range signingKeys {
+		if known[encodeKey(key)] {
+			continue
+		}
+		authorization, err := Authorize(descriptor, "signing", key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor.Authorizations = append(descriptor.Authorizations, authorization)
+	}
 	encoded, err := Encode(descriptor)
 	if err != nil {
 		t.Fatal(err)
@@ -444,8 +463,10 @@ func TestResolveIdentityStates(t *testing.T) {
 	}
 
 	// Tampered object bytes.
-	if state, _ := Resolve(f.ID, chain, &publication, manifest, []byte("tampered"), now); state != PublisherInvalid {
-		t.Fatalf("expected PUBLISHER_INVALID for tampered bytes, got %v", state)
+	// Tampered bytes never reach an identity claim, so they get their own
+	// state rather than being reported as a failed identity claim.
+	if state, _ := Resolve(f.ID, chain, &publication, manifest, []byte("tampered"), now); state != ObjectInvalid {
+		t.Fatalf("expected OBJECT_INVALID for tampered bytes, got %v", state)
 	}
 
 	// Publication transplanted onto a different object.
@@ -462,9 +483,23 @@ func TestResolveIdentityStates(t *testing.T) {
 		t.Fatalf("expected PUBLISHER_INVALID for a site mismatch, got %v", state)
 	}
 
-	// Outside the descriptor validity window.
-	if state, _ := Resolve(f.ID, chain, &publication, manifest, data, testBase.Add(400*24*time.Hour)); state != PublisherInvalid {
-		t.Fatalf("expected PUBLISHER_INVALID for an expired descriptor, got %v", state)
+	// A publication made while the descriptor was valid stays verified after
+	// the descriptor expires: expiry must not retroactively turn a
+	// publisher's back catalogue into failed identity claims.
+	if state, err := Resolve(f.ID, chain, &publication, manifest, data, testBase.Add(400*24*time.Hour)); err != nil || state != PublisherVerified {
+		t.Fatalf("a publication made in-window must stay verified, got %v (%v)", state, err)
+	}
+	// A publication claiming to have been made after the descriptor expired
+	// is not verified.
+	late := publication
+	late.PublishedAt = canonicalTime(testBase.Add(400 * 24 * time.Hour))
+	lateMessage, err := publicationSigningMessage(late)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(f.SigningA, lateMessage))
+	if state, _ := Resolve(f.ID, chain, &late, manifest, data, testBase.Add(401*24*time.Hour)); state != PublisherInvalid {
+		t.Fatalf("expected PUBLISHER_INVALID for a publication after expiry, got %v", state)
 	}
 }
 
