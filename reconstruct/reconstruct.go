@@ -1,9 +1,11 @@
 package reconstruct
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
+	"math"
 	"sort"
 )
 
@@ -20,10 +22,20 @@ func Rank(c []Candidate, target uint64) []Candidate {
 	sort.SliceStable(out, func(i, j int) bool {
 		di := hamming(out[i].Basin, target)
 		dj := hamming(out[j].Basin, target)
-		if di == dj {
-			return out[i].Score > out[j].Score
+		if di != dj {
+			return di < dj
 		}
-		return di < dj
+		si, sj := out[i].Score, out[j].Score
+		if math.IsNaN(si) {
+			si = math.Inf(-1)
+		}
+		if math.IsNaN(sj) {
+			sj = math.Inf(-1)
+		}
+		if si != sj {
+			return si > sj
+		}
+		return bytes.Compare(out[i].ID[:], out[j].ID[:]) < 0
 	})
 	return out
 }
