@@ -4,6 +4,12 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  # A superseded run tells nobody anything: it is testing a candidate that has
+  # already been replaced, while consuming a runner the new candidate needs.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
