@@ -1,3 +1,3 @@
 module github.com/Jtensetti/nomad-local-reconstruction
 
-go 1.23
+go 1.25.0
