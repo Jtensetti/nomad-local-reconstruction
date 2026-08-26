@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
+
+	"github.com/Jtensetti/nomad-local-reconstruction/site/transparency"
 )
 
 // ErrEquivocation reports two distinct valid descriptors at one sequence.
@@ -40,6 +43,10 @@ type Chain struct {
 	links    []Verified
 	encoded  [][]byte
 	equivoke *EquivocationProof
+	// distribution is the reader's view of the log that carries this site's
+	// descriptors, or nil if the chain was built without one. A chain with no
+	// log view can never reach a publisher verdict: see Resolve.
+	distribution *Distribution
 }
 
 // NewChain starts a chain from a genesis descriptor and pins the SiteID the
@@ -61,6 +68,46 @@ func NewChain(expected ID, genesisEncoded []byte) (*Chain, error) {
 	}, nil
 }
 
+// NewWitnessedChain starts a chain whose every descriptor must be in a public
+// log, including its genesis.
+//
+// The genesis is witnessed for the same reason the rest are: an attacker who
+// could hand one reader an unlogged genesis would have that reader following a
+// site nobody else can see, and every later descriptor would chain correctly
+// off it.
+func NewWitnessedChain(expected ID, genesisEncoded []byte, proof transparency.InclusionProof,
+	distribution *Distribution, now time.Time) (*Chain, error) {
+	if distribution == nil {
+		return nil, ErrUnwitnessed
+	}
+	if err := distribution.requireUsable(now); err != nil {
+		return nil, err
+	}
+	if err := distribution.Witness(genesisEncoded, proof, now); err != nil {
+		return nil, fmt.Errorf("genesis descriptor is not in the log: %w", err)
+	}
+	chain, err := NewChain(expected, genesisEncoded)
+	if err != nil {
+		return nil, err
+	}
+	chain.distribution = distribution
+	return chain, nil
+}
+
+// view returns the chain's log view, or nil if it has none.
+func (chain *Chain) view() *Distribution {
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+	return chain.distribution
+}
+
+// Witnessed reports whether this chain is gated on a transparency log.
+func (chain *Chain) Witnessed() bool {
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+	return chain.distribution != nil
+}
+
 // Append verifies and accepts the next descriptor. Re-delivering an already
 // accepted descriptor is idempotent; a lower or equal sequence with a
 // different digest is a rollback attempt and is rejected; a distinct valid
@@ -68,6 +115,39 @@ func NewChain(expected ID, genesisEncoded []byte) (*Chain, error) {
 func (chain *Chain) Append(encoded []byte) (Verified, error) {
 	chain.mu.Lock()
 	defer chain.mu.Unlock()
+	if chain.distribution != nil {
+		// Silently accepting an unwitnessed descriptor into a witnessed chain
+		// would remove the gate for anyone who called the wrong method, which
+		// is the kind of fallback that makes a property untrue in exactly the
+		// deployments that needed it.
+		return Verified{}, errors.New("this chain is witnessed by a transparency log; " +
+			"use AppendWitnessed")
+	}
+	return chain.appendLocked(encoded)
+}
+
+// AppendWitnessed accepts the next descriptor only if it is in the log.
+//
+// The inclusion proof arrives with the descriptor, over the same path. Nothing
+// here fetches anything, so accepting a descriptor cannot make a network event
+// depend on what the reader was doing.
+func (chain *Chain) AppendWitnessed(encoded []byte, proof transparency.InclusionProof,
+	now time.Time) (Verified, error) {
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+	if chain.distribution == nil {
+		return Verified{}, ErrUnwitnessed
+	}
+	if err := chain.distribution.requireUsable(now); err != nil {
+		return Verified{}, err
+	}
+	if err := chain.distribution.Witness(encoded, proof, now); err != nil {
+		return Verified{}, fmt.Errorf("descriptor is not in the log: %w", err)
+	}
+	return chain.appendLocked(encoded)
+}
+
+func (chain *Chain) appendLocked(encoded []byte) (Verified, error) {
 	if chain.equivoke != nil {
 		return Verified{}, chain.equivoke
 	}

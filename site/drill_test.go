@@ -2,8 +2,11 @@ package site
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/Jtensetti/nomad-local-reconstruction/site/transparency"
 )
 
 // A site key-compromise recovery drill, end to end.
@@ -21,10 +24,8 @@ func TestSiteKeyCompromiseRecoveryDrill(t *testing.T) {
 	f := newSiteFixture(t)
 	now := testBase.Add(2 * time.Hour)
 
-	chain, err := NewChain(f.ID, f.Genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := newWitnessedSite(t, 24*time.Hour)
+	chain := w.chain(t, f.ID, f.Genesis, testBase.Add(time.Hour))
 
 	// Step 1. Normal operation: the operator publishes, a reader verifies.
 	honestManifest, honestData := buildManifest(t, f.SigningA, "the operator's own object")
@@ -60,10 +61,7 @@ func TestSiteKeyCompromiseRecoveryDrill(t *testing.T) {
 	recoveredEncoded, _ := f.successor(t, f.Verified, TransitionRecovery,
 		[]ed25519.PrivateKey{f.Rescued}, revoked,
 		[]ed25519.PrivateKey{f.RecoverA, f.RecoverB}, "recovery")
-	recovered, err := chain.Append(recoveredEncoded)
-	if err != nil {
-		t.Fatalf("step 3: recovery was refused: %v", err)
-	}
+	recovered := w.appendTo(t, chain, recoveredEncoded, now)
 	if _, equivocating := chain.Equivocating(); equivocating {
 		t.Fatal("step 3: recovery was mistaken for equivocation")
 	}
@@ -101,20 +99,78 @@ func TestSiteKeyCompromiseRecoveryDrill(t *testing.T) {
 		t.Fatalf("step 5: the recovered site cannot publish (%v): %v", state, err)
 	}
 
-	// Step 6. A reader who never saw the recovery, and whose chain still ends
-	// at genesis, must not be told the attacker's continued publication is
-	// verified. It is the same bytes as step 4; only the reader's knowledge
-	// differs, and that difference must not resolve in the attacker's favour.
-	staleChain, err := NewChain(f.ID, f.Genesis)
+	// Step 6. What happens to a reader who has not been handed the recovery.
+	//
+	// Before descriptors were distributed through a log this was the drill's
+	// open end: such a reader accepted the attacker's publication, and nothing
+	// bounded how long that lasted. It is bounded now, and by how much depends
+	// on how the reader follows the log. Both ways are privacy-safe for the
+	// same reason: neither does anything that depends on what the user reads.
+	//
+	// 6a. A reader that follows the log's entries, on a cadence of its own,
+	// gets the recovery as soon as it syncs. The attacker cannot withhold it,
+	// because getting a descriptor accepted at all means putting it somewhere
+	// the site's owner and every reader can see. This is the strong outcome,
+	// and it costs bandwidth proportional to the log rather than to what the
+	// reader cares about -- which is exactly why it leaks nothing.
+	follower := w.newReader(t, 24*time.Hour)
+	followerChain := follower.chain(t, f.ID, f.Genesis, now)
+	follower.appendTo(t, followerChain, recoveredEncoded, now)
+	if state, _ := Resolve(f.ID, followerChain, &continuedPublication, continuedManifest,
+		continuedData, now.Add(2*time.Hour)); state != PublisherInvalid {
+		t.Fatalf("step 6a: a reader following the log still accepted the attacker (%v)", state)
+	}
+
+	// 6b. A reader that follows only checkpoints, and that the attacker can
+	// keep away from the log entirely, is the weaker case. Inside its freshness
+	// window the attacker still wins: this is the residual exposure, and the
+	// drill states it rather than hiding it.
+	const window = 6 * time.Hour
+	isolated := w.newReader(t, window)
+	isolatedChain := isolated.chain(t, f.ID, f.Genesis, now)
+	if state, _ := Resolve(f.ID, isolatedChain, &continuedPublication, continuedManifest,
+		continuedData, now.Add(time.Hour)); state != PublisherVerified {
+		t.Fatalf("step 6b: the drill assumes the attacker still wins inside the window, "+
+			"but the reader resolved %v", state)
+	}
+
+	// Once the window lapses the reader stops issuing a verdict at all. It does
+	// not fall back to accepting, and it does not retry harder because somebody
+	// is waiting: a retry driven by a reader's private activity would be an
+	// observable event that depends on it, which is worse than losing a verdict.
+	lapsed := now.Add(window + time.Second)
+	state, err = Resolve(f.ID, isolatedChain, &continuedPublication, continuedManifest,
+		continuedData, lapsed)
+	if state != PublisherUnknown {
+		t.Fatalf("step 6b: past the freshness window the reader resolved %v, and the "+
+			"attacker's window is supposed to close", state)
+	}
+	if !errors.Is(err, ErrStaleDistribution) {
+		t.Fatalf("step 6b: the reason given is not staleness: %v", err)
+	}
+
+	// And if the attacker answers by serving that reader a forged log rather
+	// than none, it has to sign a second head at a size the reader already
+	// holds, which is transferable evidence rather than a private branch.
+	forged, err := transparency.NewLog(testLogOrigin, w.private)
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleState, _ := Resolve(f.ID, staleChain, &continuedPublication, continuedManifest,
-		continuedData, now.Add(2*time.Hour))
-	if staleState == PublisherVerified {
-		t.Log("step 6: a reader who has not seen the recovery still accepts the " +
-			"attacker's publication. That is the propagation window, and it is " +
-			"bounded by descriptor distribution rather than by anything here.")
+	forged.Append(LogEntry(f.Genesis))
+	forged.Append(LogEntry([]byte("an entry the honest log never carried")))
+	held, _ := isolated.distribution.Head()
+	forgedCheckpoint, err := forged.CheckpointAt(held.Size, lapsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = isolated.distribution.Refresh(forgedCheckpoint,
+		transparency.ConsistencyProof{Old: held.Size, New: held.Size}, lapsed)
+	var split *transparency.SplitViewProof
+	if !errors.As(err, &split) {
+		t.Fatalf("step 6b: a forged log did not produce a split-view proof: %v", err)
+	}
+	if err := transparency.VerifySplitView(split, w.public); err != nil {
+		t.Fatalf("step 6b: the evidence does not verify for a third party: %v", err)
 	}
 
 	// Step 7. The operator's own back catalogue under the compromised key is

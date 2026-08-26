@@ -436,10 +436,8 @@ func buildManifest(t *testing.T, private ed25519.PrivateKey, body string) (recon
 
 func TestResolveIdentityStates(t *testing.T) {
 	f := newSiteFixture(t)
-	chain, err := NewChain(f.ID, f.Genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := newWitnessedSite(t, 24*time.Hour)
+	chain := w.chain(t, f.ID, f.Genesis, testBase.Add(time.Hour))
 	manifest, data := buildManifest(t, f.SigningA, "hello from the site")
 	publication, err := NewPublication(f.ID, f.Verified, manifest, testBase.Add(time.Hour), f.SigningA)
 	if err != nil {
@@ -486,6 +484,11 @@ func TestResolveIdentityStates(t *testing.T) {
 	// A publication made while the descriptor was valid stays verified after
 	// the descriptor expires: expiry must not retroactively turn a
 	// publisher's back catalogue into failed identity claims.
+	//
+	// The reader has kept following the log across those 400 days, which is
+	// what a reader does: the refresh runs on a cadence of its own and does
+	// not depend on anyone opening this site.
+	w.sync(t, testBase.Add(400*24*time.Hour))
 	if state, err := Resolve(f.ID, chain, &publication, manifest, data, testBase.Add(400*24*time.Hour)); err != nil || state != PublisherVerified {
 		t.Fatalf("a publication made in-window must stay verified, got %v (%v)", state, err)
 	}
@@ -498,6 +501,7 @@ func TestResolveIdentityStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	late.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(f.SigningA, lateMessage))
+	w.sync(t, testBase.Add(401*24*time.Hour))
 	if state, _ := Resolve(f.ID, chain, &late, manifest, data, testBase.Add(401*24*time.Hour)); state != PublisherInvalid {
 		t.Fatalf("expected PUBLISHER_INVALID for a publication after expiry, got %v", state)
 	}
@@ -505,10 +509,8 @@ func TestResolveIdentityStates(t *testing.T) {
 
 func TestResolveRejectsSupersededDescriptorAndRevokedKey(t *testing.T) {
 	f := newSiteFixture(t)
-	chain, err := NewChain(f.ID, f.Genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := newWitnessedSite(t, 24*time.Hour)
+	chain := w.chain(t, f.ID, f.Genesis, testBase.Add(time.Hour))
 	manifest, data := buildManifest(t, f.SigningA, "published before recovery")
 	publication, err := NewPublication(f.ID, f.Verified, manifest, testBase.Add(time.Hour), f.SigningA)
 	if err != nil {
@@ -517,9 +519,7 @@ func TestResolveRejectsSupersededDescriptorAndRevokedKey(t *testing.T) {
 	revoked := []string{encodeKey(f.SigningA), encodeKey(f.SigningB)}
 	recoveryEncoded, _ := f.successor(t, f.Verified, TransitionRecovery,
 		[]ed25519.PrivateKey{f.Rescued}, revoked, []ed25519.PrivateKey{f.RecoverA, f.RecoverB}, "recovery")
-	if _, err := chain.Append(recoveryEncoded); err != nil {
-		t.Fatal(err)
-	}
+	w.appendTo(t, chain, recoveryEncoded, testBase.Add(2*time.Hour))
 	now := testBase.Add(2 * time.Hour)
 	// After recovery, a publication under the compromised key and superseded
 	// descriptor is an invalid identity claim, not an unknown one.

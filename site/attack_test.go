@@ -374,10 +374,8 @@ func TestResolveReportsFailedClaimsAsInvalidNotUnknown(t *testing.T) {
 
 func TestRotationDoesNotInvalidateEarlierPublications(t *testing.T) {
 	f := newSiteFixture(t)
-	chain, err := NewChain(f.ID, f.Genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := newWitnessedSite(t, 24*time.Hour)
+	chain := w.chain(t, f.ID, f.Genesis, testBase.Add(time.Hour))
 	manifest, data := buildManifest(t, f.SigningA, "published before rotation")
 	publication, err := NewPublication(f.ID, f.Verified, manifest, testBase.Add(time.Hour), f.SigningA)
 	if err != nil {
@@ -387,9 +385,7 @@ func TestRotationDoesNotInvalidateEarlierPublications(t *testing.T) {
 	rotation, _ := f.successor(t, f.Verified, TransitionRotation,
 		[]ed25519.PrivateKey{f.SigningA, f.SigningB, f.Rotated}, []string{},
 		[]ed25519.PrivateKey{f.SigningA, f.SigningB}, "signing")
-	if _, err := chain.Append(rotation); err != nil {
-		t.Fatal(err)
-	}
+	w.appendTo(t, chain, rotation, testBase.Add(2*time.Hour))
 	state, err := Resolve(f.ID, chain, &publication, manifest, data, testBase.Add(2*time.Hour))
 	if err != nil || state != PublisherVerified {
 		t.Fatalf("a routine rotation must not invalidate earlier publications, got %v (%v)", state, err)

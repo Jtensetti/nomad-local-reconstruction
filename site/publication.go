@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jtensetti/nomad-local-reconstruction/reconstruct"
+	"github.com/Jtensetti/nomad-local-reconstruction/site/transparency"
 )
 
 const (
@@ -298,6 +299,26 @@ func Resolve(intended ID, chain *Chain, publication *Publication, manifest recon
 	}
 	if headRevoked(head, signingKey) {
 		return PublisherInvalid, errors.New("publication signing key has been revoked")
+	}
+
+	// Everything the chain can settle has been settled. What it cannot settle
+	// is whether this reader is the only one being shown this chain, and that
+	// is the difference between "these descriptors are internally consistent"
+	// and "this is the publisher everyone else sees".
+	//
+	// The gate is here, on the last step, rather than earlier: a contradicted
+	// claim is invalid whether or not the reader's log view is current, and
+	// suppressing a detected contradiction because a checkpoint expired would
+	// trade a true negative for an absence. Only the positive verdict waits on
+	// the log.
+	if err := chain.view().requireUsable(now); err != nil {
+		if errors.Is(err, transparency.ErrSplitView) {
+			// A log that served two histories is a contradicted identity claim,
+			// not an absent one, in the same way a forked descriptor chain is:
+			// the reader holds evidence, not a gap.
+			return PublisherInvalid, err
+		}
+		return PublisherUnknown, err
 	}
 	return PublisherVerified, nil
 }
