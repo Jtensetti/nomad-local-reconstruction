@@ -1,21 +1,57 @@
-MIT License
+NOMAD RESTRICTED SOURCE LICENSE 1.0
 
-Copyright (c) 2026 Nomad research contributors
+Copyright (c) 2026 Jonatan Tensetti. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This is a source-available license. It is not an open-source or free-software license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Scope
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+This license applies to the source code, object code, documentation, configuration, test material, specifications, and other original Nomad materials in this repository (the "Software"), except for third-party material that is expressly identified as being governed by another license.
+
+2. Limited inspection permission
+
+Subject to this license, you may access and inspect the Software for evaluation, academic research, interoperability analysis, and good-faith security or privacy review. You may make only those temporary local copies technically necessary for those purposes. You may compile or execute the Software only in a non-production environment for the same limited purposes.
+
+You may submit proposed changes to the copyright holder or to the official Nomad repository. This permission does not authorize you to publish or distribute a fork, derivative work, modified build, or substantial copy of the Software.
+
+3. Rights reserved; separate license required
+
+Except for the limited permission in Section 2, no right is granted to copy, reproduce, retain, modify, adapt, translate, merge, publish, distribute, redistribute, sublicense, sell, lease, host, deploy, operate, commercialize, provide as a service, incorporate into another product or service, or create or distribute derivative works of the Software.
+
+Any such use requires a separate written agreement with the copyright holder. The terms of that agreement may include a license fee, royalty, revenue share, equity, acquisition, assignment, or other negotiated consideration.
+
+4. No production, hosted-service, or competitive use
+
+Without a separate written agreement, you may not use the Software, in whole or in part, to operate a production network, commercial or non-commercial hosted service, managed service, anonymity or privacy service, software product, protocol implementation, browser product, infrastructure service, or other operational system for third parties.
+
+You may not use the Software or a derivative of it to create, train, validate, or materially improve a competing implementation, product, or service. Automated code analysis performed solely for the purposes allowed by Section 2 is permitted; use of the Software as training data for a general-purpose or code-generation model requires separate written permission.
+
+5. No redistribution or sublicensing
+
+You may not redistribute the Software or any substantial portion of it, whether in source or binary form, and may not grant any third party rights to the Software, except as expressly authorized in a separate written agreement.
+
+6. Third-party material
+
+Third-party components remain governed by their respective licenses. Nothing in this license restricts rights that you independently receive from the copyright holder of such third-party material. Where a file or component contains a separate copyright or license notice, that notice controls for that material.
+
+7. No trademark or patent grant
+
+No trademark rights are granted. No patent license is granted except to the minimum extent, if any, required by applicable law to exercise the limited permission in Section 2.
+
+8. Termination
+
+Any rights granted under Section 2 terminate automatically upon breach of this license. Upon termination you must cease use of the Software and delete retained copies, except copies that applicable law requires you to preserve.
+
+9. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, SECURITY, PRIVACY, AVAILABILITY, OR FITNESS FOR PRODUCTION USE. TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE.
+
+10. Commercial licensing
+
+For permission beyond Section 2, contact the repository owner to negotiate a separate written commercial or acquisition agreement.
+
+11. Governing law
+
+To the extent permitted by applicable law, this license is governed by the laws of Sweden, without regard to conflict-of-law rules.
+
+SPDX-License-Identifier: LicenseRef-Nomad-Restricted-Source-1.0
