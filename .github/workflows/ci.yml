@@ -31,10 +31,11 @@ jobs:
           fi
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Verify the vulnerability gate still fails closed
+        run: ./scripts/test-scan-vulnerabilities.sh
       - name: Scan dependencies for reachable vulnerabilities
         run: |
           # A vulnerability gate in one repository is a gate on one
           # repository. This ran only in Nomad-browser, leaving the
           # integration root and the cryptographic core unscanned.
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
+          ./scripts/scan-vulnerabilities.sh
