@@ -31,6 +31,12 @@ jobs:
           fi
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Static analysis, failing closed
+        run: |
+          # staticcheck exits 0 when it cannot analyse a module, so "clean" and
+          # "read nothing" are the same exit code. The script proves the tool is
+          # analysing with a positive control before it trusts a clean run.
+          ./scripts/run-staticcheck.sh
       - name: Verify the vulnerability gate still fails closed
         run: ./scripts/test-scan-vulnerabilities.sh
       - name: Scan dependencies for reachable vulnerabilities
