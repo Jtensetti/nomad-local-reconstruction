@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"math"
 	"testing"
 )
@@ -87,5 +88,49 @@ func TestRankIsCanonicalAndNaNIsLowestScore(t *testing.T) {
 	got := Rank(candidates, 0)
 	if !bytes.Equal(got[0].ID[:], lowID[:]) || !bytes.Equal(got[1].ID[:], highID[:]) || !math.IsNaN(got[2].Score) {
 		t.Fatalf("non-canonical order: %#v", got)
+	}
+}
+
+// VerifyEnvelope checks the object signature separately from the manifest
+// signature, and the separation is not redundant.
+//
+// Corrupting the object signature on its own also breaks the manifest
+// signature, because signingMessage covers it -- so a test that only flips
+// bytes never reaches this check, and a mutation disabling it leaves the suite
+// green. The case that does reach it is a manifest a publisher signed
+// correctly which attests to an object signature that does not verify: an
+// internally consistent document making a false claim.
+//
+// Without this check the manifest passes, Verifier hands the bad signature to
+// the caller, and the failure surfaces later at object verification -- after
+// the fragments have been fetched and decoded.
+func TestACorrectlySignedManifestCannotVouchForABadObjectSignature(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("an object a publisher means to publish")
+	manifest, err := NewManifest(data, 7, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.VerifyEnvelope(); err != nil {
+		t.Fatalf("the untampered manifest was refused: %v", err)
+	}
+
+	// An object signature over different bytes. Everything else about the
+	// manifest stays true, and the publisher signs the result honestly.
+	other := sha256.Sum256([]byte("a different object entirely"))
+	copy(manifest.ObjectSignature[:], ed25519.Sign(private, SigningMessage(other)))
+	copy(manifest.ManifestSignature[:], ed25519.Sign(private, manifest.signingMessage()))
+
+	// The control: the manifest signature really is valid, so what follows is
+	// the object-signature check firing and not that one.
+	if !ed25519.Verify(public, manifest.signingMessage(), manifest.ManifestSignature[:]) {
+		t.Fatal("the fixture's manifest signature is invalid, so this would prove nothing")
+	}
+	if err := manifest.VerifyEnvelope(); err == nil {
+		t.Fatal("a manifest signed correctly by its publisher vouched for an object " +
+			"signature that does not verify")
 	}
 }
