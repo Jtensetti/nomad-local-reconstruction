@@ -420,3 +420,114 @@ func TestChainIsRaceFreeUnderConcurrentUse(t *testing.T) {
 		t.Fatal("concurrent appends of one descriptor must not look like equivocation")
 	}
 }
+
+// A proof is an accusation anyone can publish, and a chain that acts on one
+// stops accepting the site's descriptors. So the ways a proof can be
+// fabricated matter as much as the way a genuine one is built: each of these
+// takes a proof the chain itself produced and breaks exactly one field.
+func genuineProof(t *testing.T) (*EquivocationProof, *siteFixture) {
+	t.Helper()
+	f := newSiteFixture(t)
+	chain, err := NewChain(f.ID, f.Genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := f.successor(t, f.Verified, TransitionRotation,
+		[]ed25519.PrivateKey{f.Rotated}, []string{},
+		[]ed25519.PrivateKey{f.SigningA, f.SigningB}, "signing")
+	if _, err := chain.Append(first); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := f.successor(t, f.Verified, TransitionRotation,
+		[]ed25519.PrivateKey{f.Rescued}, []string{},
+		[]ed25519.PrivateKey{f.SigningA, f.SigningB}, "signing")
+	if _, err := chain.Append(second); !errors.Is(err, ErrEquivocation) {
+		t.Fatalf("the fixture did not equivocate: %v", err)
+	}
+	proof, ok := chain.Equivocating()
+	if !ok {
+		t.Fatal("the chain recorded no proof, so there is nothing to break")
+	}
+	if err := VerifyEquivocationProof(*proof); err != nil {
+		t.Fatalf("the unmodified proof must verify, or these negatives prove nothing: %v", err)
+	}
+	return proof, f
+}
+
+// The framing attack the proof format has to survive: one descriptor named
+// twice. Both branches parse, both are authorized, both carry the claimed
+// sequence and site -- and nothing was equivocated.
+func TestAProofNamingOneDescriptorTwiceIsNotEvidenceOfEquivocation(t *testing.T) {
+	proof, _ := genuineProof(t)
+	forged := *proof
+	forged.Second = forged.First
+	if err := VerifyEquivocationProof(forged); err == nil {
+		t.Fatal("a proof whose two branches are the same descriptor was accepted")
+	} else if !strings.Contains(err.Error(), "identical") {
+		t.Fatalf("refused for %q rather than for naming one descriptor twice", err)
+	}
+}
+
+// A proof carrying another site's identifier must not verify against this
+// site's descriptors. Without this a proof against any site could be
+// relabelled to accuse another.
+func TestAProofClaimingAnotherSiteIsRefused(t *testing.T) {
+	proof, _ := genuineProof(t)
+	forged := *proof
+	forged.SiteID[0] ^= 0xff
+	if err := VerifyEquivocationProof(forged); err == nil {
+		t.Fatal("a proof naming a site its genesis does not derive was accepted")
+	} else if !strings.Contains(err.Error(), "claimed site") {
+		t.Fatalf("refused for %q rather than for the site it names", err)
+	}
+}
+
+// A proof at the genesis sequence carries no prefix, so nothing above has
+// already tied its branches to the site it names. That is the one place the
+// site check on the branches themselves can fire, and without it a proof
+// built from someone else's genesis descriptors would accuse this site.
+func TestAGenesisProofBuiltFromAnotherSitesDescriptorsIsRefused(t *testing.T) {
+	accused := newSiteFixture(t)
+	other := otherSiteGenesis(t)
+	forged := EquivocationProof{
+		SiteID: accused.ID, Sequence: 0,
+		First: other, Second: accused.Genesis,
+	}
+	if err := VerifyEquivocationProof(forged); err == nil {
+		t.Fatal("a genesis proof built from another site's descriptor was accepted")
+	} else if !strings.Contains(err.Error(), "claimed site") {
+		t.Fatalf("refused for %q rather than for the site its branches belong to", err)
+	}
+}
+
+// otherSiteGenesis builds a second site. newSiteFixture is fully
+// deterministic, so two calls to it are one site twice, which would make the
+// proof above fail on its identical-branches check instead of the one being
+// tested.
+func otherSiteGenesis(t *testing.T) []byte {
+	t.Helper()
+	signing := deterministicKey(t, "other-site-signing")
+	recovery := deterministicKey(t, "other-site-recovery")
+	descriptor := Descriptor{
+		Version: DescriptorVersion, SiteID: hex.EncodeToString(make([]byte, 32)), Sequence: 0,
+		Transition: TransitionGenesis, PreviousDescriptorDigest: hex.EncodeToString(make([]byte, 32)),
+		ValidFrom: canonicalTime(testBase), ValidUntil: canonicalTime(testBase.Add(365 * 24 * time.Hour)),
+		SigningKeys: []string{encodeKey(signing)}, RevokedKeys: []string{},
+		Recovery: Recovery{Threshold: 1, Keys: []string{encodeKey(recovery)}},
+	}
+	id, err := DeriveID(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor.SiteID = hex.EncodeToString(id[:])
+	descriptor.Authorizations = authorizeAll(t, descriptor,
+		[]ed25519.PrivateKey{signing}, []ed25519.PrivateKey{recovery})
+	encoded, err := Encode(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(encoded, nil); err != nil {
+		t.Fatalf("the second site's genesis must verify on its own: %v", err)
+	}
+	return encoded
+}

@@ -279,6 +279,10 @@ func VerifyEquivocationProof(proof EquivocationProof) error {
 				return errors.New("proof genesis does not derive the claimed site")
 			}
 		}
+		// Depth rather than a live check: VerifyDescriptor already requires a
+		// non-genesis descriptor to carry its predecessor's SiteID, and the
+		// genesis check above fixes that SiteID to the claimed one. Kept
+		// because the entailment lives in another file.
 		if verified.SiteID != proof.SiteID {
 			return errors.New("proof ancestor belongs to another site")
 		}
@@ -294,9 +298,16 @@ func VerifyEquivocationProof(proof EquivocationProof) error {
 	if err != nil {
 		return fmt.Errorf("second descriptor is not a valid competitor: %w", err)
 	}
+	// Also depth: the prefix length is checked against the sequence above, and
+	// VerifyDescriptor requires each descriptor to sit one past its
+	// predecessor, so a branch that parsed against the last ancestor is at the
+	// claimed sequence by construction. At sequence zero the genesis path
+	// requires it directly.
 	if first.Descriptor.Sequence != proof.Sequence || second.Descriptor.Sequence != proof.Sequence {
 		return errors.New("proof descriptors do not share the claimed sequence")
 	}
+	// This one does fire, at sequence zero: an empty prefix leaves nothing
+	// above to have tied the branches to the site the proof names.
 	if first.SiteID != proof.SiteID || second.SiteID != proof.SiteID {
 		return errors.New("proof descriptors do not share the claimed site")
 	}
