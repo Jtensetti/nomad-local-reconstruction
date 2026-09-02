@@ -1,0 +1,11 @@
+# Never translate line endings, on any platform.
+#
+# Git's default on Windows is core.autocrlf=true, which rewrites LF to CRLF on
+# checkout, so the same commit produces different bytes there. This project
+# compares committed vectors byte-for-byte against their encoders and pins
+# trees by digest; the first Windows CI run found the epoch vector comparison
+# failing on bytes that were identical in the repository.
+#
+# A blanket rule rather than a list of extensions: a checkout should be the
+# commit, and an exception is a file where that stops being true.
+* -text
