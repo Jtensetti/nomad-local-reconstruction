@@ -29,7 +29,13 @@ jobs:
             gofmt -d .
             exit 1
           fi
-      - run: go test -race ./...
+      - name: Test, with the environment declaring what it can run
+        # A skip is green. Declaring the capability turns "python3 is missing"
+        # from a silent skip into a failure, so the cross-implementation check
+        # cannot stop running without anyone noticing.
+        env:
+          NOMAD_REQUIRE_CAPABILITY_GATES: '1'
+        run: go test -race ./...
       - run: go vet ./...
       - name: Static analysis, failing closed
         run: |

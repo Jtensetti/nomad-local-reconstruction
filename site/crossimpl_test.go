@@ -38,11 +38,32 @@ type crossLogProofs struct {
 	} `json:"consistency_proofs"`
 }
 
-func TestTheSecondImplementationAgreesAboutTheLog(t *testing.T) {
+// requireSecondImplementation returns the interpreter the second
+// implementation runs under.
+//
+// A skip is green. A gate that quietly stopped running -- an image that no
+// longer ships python3 -- is indistinguishable from a gate that passed, and
+// the cross-implementation claim would go on being cited by a check that had
+// not executed. Where the environment has declared the capability, its absence
+// is a failure.
+func requireSecondImplementation(t *testing.T) string {
+	t.Helper()
 	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not available, so the second implementation cannot be run")
+	if err == nil {
+		return python
 	}
+	if os.Getenv("NOMAD_REQUIRE_CAPABILITY_GATES") == "1" {
+		t.Fatal("python3 is unavailable, and NOMAD_REQUIRE_CAPABILITY_GATES=1 says " +
+			"this environment is supposed to run the second implementation. " +
+			"Skipping here would report what passing reports.")
+	}
+	t.Skip("python3 is not available, so the second implementation cannot be run; " +
+		"an environment limit and not a pass")
+	return ""
+}
+
+func TestTheSecondImplementationAgreesAboutTheLog(t *testing.T) {
+	python := requireSecondImplementation(t)
 	script := filepath.Join("..", "conformance", "reference", "crosscheck_sitelog.py")
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("the second implementation is missing: %v", err)
