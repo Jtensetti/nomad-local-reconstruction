@@ -804,12 +804,12 @@ func TestTheDuplicateScanWalksTheWholeDocument(t *testing.T) {
 	}
 	if _, err := DecodeCheckpoint(nest(maxCheckpointDepth + 1)); err == nil {
 		t.Fatal("a document past the depth limit was accepted")
-	} else if !strings.Contains(err.Error(), "nested too deeply") {
+	} else if !strings.Contains(err.Error(), "nesting is too deep") {
 		t.Fatalf("a document past the depth limit was refused for %q rather than its depth", err)
 	}
 	if _, err := DecodeCheckpoint(nest(maxCheckpointDepth)); err == nil {
 		t.Fatal("a checkpoint whose version is a nest of arrays was accepted")
-	} else if strings.Contains(err.Error(), "nested too deeply") {
+	} else if strings.Contains(err.Error(), "nesting is too deep") {
 		t.Fatalf("a document at exactly the depth limit was refused for its depth: %v", err)
 	}
 
@@ -818,7 +818,7 @@ func TestTheDuplicateScanWalksTheWholeDocument(t *testing.T) {
 	late := `{"origin":[1,2,{"a":1}],"version":"x","size":1,"size":2}`
 	if _, err := DecodeCheckpoint([]byte(late)); err == nil {
 		t.Fatal("a duplicate member after a nested value was accepted")
-	} else if !strings.Contains(err.Error(), "duplicate member") {
+	} else if !strings.Contains(err.Error(), "duplicate JSON key") {
 		t.Fatalf("refused for %q rather than the duplicate", err)
 	}
 

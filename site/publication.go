@@ -6,10 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/Jtensetti/nomad-local-reconstruction/reconstruct"
@@ -161,32 +159,6 @@ func NewPublication(siteID ID, descriptor Verified, manifest reconstruct.Manifes
 		return Publication{}, err
 	}
 	publication.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(private, message))
-	return publication, nil
-}
-
-func EncodePublication(publication Publication) ([]byte, error) {
-	if _, err := publicationCanonicalBytes(publication); err != nil {
-		return nil, err
-	}
-	return json.MarshalIndent(publication, "", "  ")
-}
-
-func DecodePublication(encoded []byte) (Publication, error) {
-	if len(encoded) == 0 || len(encoded) > MaximumFileBytes {
-		return Publication{}, errors.New("site publication is empty or too large")
-	}
-	if err := rejectDuplicateKeys(encoded); err != nil {
-		return Publication{}, err
-	}
-	var publication Publication
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&publication); err != nil {
-		return Publication{}, fmt.Errorf("decode site publication: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Publication{}, errors.New("trailing site publication data")
-	}
 	return publication, nil
 }
 

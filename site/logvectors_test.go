@@ -198,7 +198,7 @@ func TestThePublishedLogCorpusIsInternallySound(t *testing.T) {
 		"signature": "signature",
 		"time":      "checkpoint time",
 		"root":      "checkpoint root",
-		"duplicate": "duplicate member",
+		"duplicate": "duplicate JSON key",
 		"unknown":   "unknown field",
 	}
 	for _, refusal := range corpus.Refusals {

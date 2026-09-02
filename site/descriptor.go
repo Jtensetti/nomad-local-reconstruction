@@ -11,9 +11,13 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/Jtensetti/nomad-local-reconstruction/internal/strictjson"
 )
 
 const (
+	maxDescriptorDepth = 16
+
 	DescriptorVersion = "nomad-site-descriptor-v1"
 	MaximumFileBytes  = 1 << 20
 
@@ -254,7 +258,7 @@ func Decode(encoded []byte) (Descriptor, error) {
 	if len(encoded) == 0 || len(encoded) > MaximumFileBytes {
 		return Descriptor{}, errors.New("site descriptor is empty or too large")
 	}
-	if err := rejectDuplicateKeys(encoded); err != nil {
+	if err := strictjson.RejectDuplicateKeys(encoded, maxDescriptorDepth); err != nil {
 		return Descriptor{}, err
 	}
 	var descriptor Descriptor

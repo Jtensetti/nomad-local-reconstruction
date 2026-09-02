@@ -4,17 +4,22 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Jtensetti/nomad-local-reconstruction/internal/strictjson"
 )
 
 // CheckpointVersion is the frozen label for a signed log head.
 const CheckpointVersion = "nomad-site-log-checkpoint-v1"
 
 const (
+	maxCheckpointDepth = 8
+
 	checkpointDomain = "nomad-site-log-checkpoint-signature-v1"
 	// maxCheckpointBytes bounds what a reader will parse. A checkpoint is a
 	// few hundred bytes; anything near this is a caller trying to make the
@@ -88,12 +93,7 @@ func appendString(out []byte, value string) []byte {
 }
 
 func appendUint64(out []byte, value uint64) []byte {
-	var buffer [8]byte
-	for index := 7; index >= 0; index-- {
-		buffer[index] = byte(value)
-		value >>= 8
-	}
-	return append(out, buffer[:]...)
+	return binary.BigEndian.AppendUint64(out, value)
 }
 
 // SignCheckpoint produces a signed head over a tree.
@@ -232,7 +232,7 @@ func DecodeCheckpoint(encoded []byte) (Checkpoint, error) {
 		return Checkpoint{}, fmt.Errorf("checkpoint is %d bytes, over the %d limit",
 			len(encoded), maxCheckpointBytes)
 	}
-	if err := rejectDuplicateKeys(encoded); err != nil {
+	if err := strictjson.RejectDuplicateKeys(encoded, maxCheckpointDepth); err != nil {
 		return Checkpoint{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
@@ -245,56 +245,4 @@ func DecodeCheckpoint(encoded []byte) (Checkpoint, error) {
 		return Checkpoint{}, errors.New("trailing content after the checkpoint")
 	}
 	return checkpoint, nil
-}
-
-func rejectDuplicateKeys(encoded []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	return walkValue(decoder, 0)
-}
-
-const maxCheckpointDepth = 8
-
-func walkValue(decoder *json.Decoder, depth int) error {
-	if depth > maxCheckpointDepth {
-		return errors.New("checkpoint is nested too deeply")
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		seen := map[string]struct{}{}
-		for decoder.More() {
-			key, err := decoder.Token()
-			if err != nil {
-				return err
-			}
-			name, ok := key.(string)
-			if !ok {
-				return errors.New("object key is not a string")
-			}
-			if _, duplicate := seen[name]; duplicate {
-				return fmt.Errorf("duplicate member %q", name)
-			}
-			seen[name] = struct{}{}
-			if err := walkValue(decoder, depth+1); err != nil {
-				return err
-			}
-		}
-	case '[':
-		for decoder.More() {
-			if err := walkValue(decoder, depth+1); err != nil {
-				return err
-			}
-		}
-	}
-	if _, err := decoder.Token(); err != nil {
-		return err
-	}
-	return nil
 }
