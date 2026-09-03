@@ -432,3 +432,168 @@ func TestALogThatEquivocatedEndsTheVerdictForItsSites(t *testing.T) {
 		t.Fatalf("a descriptor was accepted after the log equivocated: %v", err)
 	}
 }
+
+// The freeze, at the boundary where it decides a publisher verdict.
+//
+// The site's signing key is compromised and the owner publishes a recovery
+// descriptor revoking it. A colluding log withholds that descriptor from one
+// targeted reader by re-signing the head from just before it with a current
+// timestamp -- which is indistinguishable from an honest quiet log, so nothing
+// the reader can check locally rejects it. The reader stays fresh, keeps the
+// pre-recovery chain, and keeps resolving the attacker's publications as coming
+// from a verified publisher, for as long as the log keeps re-signing.
+//
+// Requiring witness cosignatures ends it: the witness moved to the head that
+// carries the recovery and will not sign the old one at a new date, so the
+// reader refuses, goes stale, and stops issuing a verdict at all.
+//
+// PublisherUnknown is the right answer here and not a lesser one. The reader
+// genuinely does not know; saying so is the whole point.
+func TestACosignedReaderCannotBeFrozenBeforeARecovery(t *testing.T) {
+	f := newSiteFixture(t)
+	const window = time.Hour
+	start := testBase.Add(time.Hour)
+
+	witnessKeyPublic, witnessKeyPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPublic, logPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := transparency.NewLog(testLogOrigin, logPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness, err := transparency.NewWitness("witness-one", witnessKeyPrivate, testLogOrigin,
+		logPublic, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := transparency.NewWitnessPolicy(1,
+		map[string]ed25519.PublicKey{"witness-one": witnessKeyPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bring both readers to the genesis, on a head the witness cosigned then.
+	log.Append(LogEntry(f.Genesis))
+	genesisHead, err := log.CheckpointAt(log.Size(), start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisProof, err := log.ProveConsistency(0, log.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cosignature, err := witness.Cosign(genesisHead, genesisProof, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHead.Cosignatures = []transparency.Cosignature{cosignature}
+
+	unguarded, err := NewDistribution(testLogOrigin, logPublic, window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded, err := NewCosignedDistribution(testLogOrigin, logPublic, window, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, reader := range map[string]*Distribution{"unguarded": unguarded, "guarded": guarded} {
+		if err := reader.Refresh(genesisHead, genesisProof, start); err != nil {
+			t.Fatalf("the %s reader could not start at the genesis: %v", name, err)
+		}
+	}
+	inclusion, err := log.ProveInclusion(LogEntry(f.Genesis), log.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unguardedChain, err := NewWitnessedChain(f.ID, f.Genesis, inclusion, unguarded, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardedChain, err := NewWitnessedChain(f.ID, f.Genesis, inclusion, guarded, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A publication signed by the key that is about to be compromised.
+	manifest, data := buildManifest(t, f.SigningA, "an object")
+	publication, err := NewPublication(f.ID, f.Verified, manifest, testBase.Add(30*time.Minute),
+		f.SigningA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := Resolve(f.ID, unguardedChain, &publication, manifest, data, start); state != PublisherVerified {
+		t.Fatalf("before the compromise the reader resolved %v: %v", state, err)
+	}
+
+	// The compromise, and the owner's answer to it. The log takes the recovery
+	// and the witness follows it; only the targeted reader is held back.
+	recovery, _ := f.successor(t, f.Verified, TransitionRecovery,
+		[]ed25519.PrivateKey{f.Rescued},
+		[]string{encodeKey(f.SigningA), encodeKey(f.SigningB)},
+		[]ed25519.PrivateKey{f.RecoverA, f.RecoverB}, "recovery")
+	log.Append(LogEntry(recovery))
+	frozenAt := log.Size() - 1
+	if _, err := witness.Cosign(mustCheckpoint(t, log, start.Add(time.Minute)),
+		mustConsistency(t, log, frozenAt, log.Size()), start.Add(time.Minute)); err != nil {
+		t.Fatalf("the witness could not follow the log past the recovery: %v", err)
+	}
+
+	// The log re-dates the pre-recovery head for hours. The unguarded reader
+	// stays fresh and keeps its verdict on a key that has been revoked.
+	now := start
+	for round := 0; round < 24; round++ {
+		now = now.Add(30 * time.Minute)
+		stale, err := log.CheckpointAt(frozenAt, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proof := mustConsistency(t, log, frozenAt, frozenAt)
+		if err := unguarded.Refresh(stale, proof, now); err != nil {
+			t.Fatalf("round %d: the unguarded reader refused the re-dated head, so this "+
+				"test's comparison proves nothing: %v", round, err)
+		}
+		if state, err := Resolve(f.ID, unguardedChain, &publication, manifest, data,
+			now); state != PublisherVerified {
+			t.Fatalf("round %d: the frozen reader resolved %v: %v", round, state, err)
+		}
+
+		// The same head, offered to the reader that requires a cosignature.
+		if err := guarded.Refresh(stale, proof, now); err == nil {
+			t.Fatalf("round %d: the guarded reader accepted a head no witness would sign", round)
+		}
+	}
+
+	// The unguarded reader has been held a full day behind a revocation while
+	// reporting a verified publisher throughout. The guarded one ran out of
+	// freshness and says it does not know.
+	state, err := Resolve(f.ID, guardedChain, &publication, manifest, data, now)
+	if state != PublisherUnknown {
+		t.Fatalf("the guarded reader resolved %v rather than admitting it was cut off", state)
+	}
+	if !errors.Is(err, ErrStaleDistribution) {
+		t.Fatalf("the reason given is not staleness: %v", err)
+	}
+}
+
+func mustCheckpoint(t *testing.T, log *transparency.Log, now time.Time) transparency.Checkpoint {
+	t.Helper()
+	checkpoint, err := log.Checkpoint(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checkpoint
+}
+
+func mustConsistency(t *testing.T, log *transparency.Log, old, size uint64) transparency.ConsistencyProof {
+	t.Helper()
+	proof, err := log.ProveConsistency(old, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proof
+}

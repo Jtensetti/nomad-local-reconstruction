@@ -86,6 +86,36 @@ func NewDistribution(origin string, logKey ed25519.PublicKey,
 	return &Distribution{monitor: monitor}, nil
 }
 
+// NewCosignedDistribution builds a reader that requires witness cosignatures on
+// every checkpoint it accepts.
+//
+// NewDistribution's reader can catch a log that shows *it* two histories. It
+// cannot catch the attack that actually matters, because that attack never
+// shows one reader two branches: the log serves this reader a self-consistent
+// history containing the attacker's descriptor and everyone else the real one.
+// Every signature verifies, every proof checks out, and the reader has nothing
+// to compare against.
+//
+// A policy makes each checkpoint carry statements from parties that are not the
+// log, and an honest witness signs at most one root per size. The cosignatures
+// ride inside the checkpoint this reader already fetches on its fixed cadence,
+// so this costs no traffic at all and nothing here varies with what the user is
+// reading -- the trust set is pinned in advance rather than discovered, which
+// is what keeps a read from turning into a lookup.
+//
+// It costs availability instead: a head no threshold of witnesses cosigned is
+// refused, the reader goes stale, and publications stop reaching an identity
+// verdict. That ordering is the invariant's -- lose the verdict rather than
+// accept one that cannot be checked -- and it is deliberately not a fallback.
+func NewCosignedDistribution(origin string, logKey ed25519.PublicKey,
+	freshness time.Duration, policy *transparency.WitnessPolicy) (*Distribution, error) {
+	monitor, err := transparency.NewCosignedMonitor(origin, logKey, freshness, policy)
+	if err != nil {
+		return nil, err
+	}
+	return &Distribution{monitor: monitor}, nil
+}
+
 // Refresh moves the reader to a newer log checkpoint.
 //
 // This is the call that runs on a fixed cadence. It must never be driven by

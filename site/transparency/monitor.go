@@ -99,6 +99,13 @@ type Monitor struct {
 	heads map[uint64]Checkpoint
 	// order is insertion order over heads, oldest first, for eviction.
 	order []uint64
+	// policy is the pinned witness set, when the reader requires one. Nil
+	// means this reader counts only what it has seen itself, which catches a
+	// log that equivocates *to it* and not one that serves it a private branch
+	// consistently. NewCosignedMonitor is how a reader asks for the stronger
+	// property; the weaker one is not reached by a fallback, only by asking
+	// for it.
+	policy *WitnessPolicy
 	// split is the evidence that this log served two histories, once found.
 	//
 	// It is absorbing, like the descriptor chain's equivocation state and for
@@ -136,6 +143,32 @@ func NewMonitor(origin string, logKey ed25519.PublicKey, freshness time.Duration
 		freshness: freshness,
 		heads:     map[uint64]Checkpoint{},
 	}, nil
+}
+
+// NewCosignedMonitor builds a reader that requires witness cosignatures.
+//
+// This is the reader that can detect a log serving it a private branch. Without
+// a policy a Monitor can only catch a log that shows one reader two histories;
+// with one, every head it accepts carries statements from parties that are not
+// the log, and a log that wants two branches has to corrupt a threshold of them.
+//
+// Requiring cosignatures costs availability, on purpose: a head that cannot be
+// cosigned is refused rather than accepted with a warning, the reader goes
+// stale, and publications stop reaching an identity verdict. That is the
+// invariant's own ordering -- lose the verdict rather than accept an
+// unverifiable one -- and it must not be softened into a fallback.
+func NewCosignedMonitor(origin string, logKey ed25519.PublicKey, freshness time.Duration,
+	policy *WitnessPolicy) (*Monitor, error) {
+	if policy == nil {
+		return nil, errors.New("a cosigned monitor needs a witness policy; use NewMonitor " +
+			"deliberately if this reader is to count only what it has seen itself")
+	}
+	monitor, err := NewMonitor(origin, logKey, freshness)
+	if err != nil {
+		return nil, err
+	}
+	monitor.policy = policy
+	return monitor, nil
 }
 
 // Equivocating reports the evidence that this log served two histories, if this
@@ -192,6 +225,16 @@ func (monitor *Monitor) Update(checkpoint Checkpoint, proof ConsistencyProof, no
 				Second: checkpoint,
 			}
 			return monitor.split
+		}
+	}
+
+	// After the split-view check and before anything is remembered. A head the
+	// witnesses did not cosign is not accepted, but a head that equivocates
+	// against one already held is evidence whether it was cosigned or not, and
+	// the evidence is worth more than the refusal.
+	if monitor.policy != nil {
+		if err := monitor.policy.Verify(checkpoint, verified.Root); err != nil {
+			return err
 		}
 	}
 

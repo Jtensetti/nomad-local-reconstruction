@@ -24,7 +24,13 @@ const (
 	// maxCheckpointBytes bounds what a reader will parse. A checkpoint is a
 	// few hundred bytes; anything near this is a caller trying to make the
 	// parser the expensive part.
-	maxCheckpointBytes = 4096
+	//
+	// Raised from 4096 when cosignatures were added: sixteen of them with
+	// names at maxWitnessNameBytes is about 2.5 kB on top of the base
+	// checkpoint, which 4096 would refuse. This bounds the parser only -- it
+	// is not part of any signed message -- and the real bound on the work an
+	// attacker can buy is maxCosignatures, not this.
+	maxCheckpointBytes = 8192
 	// maxOriginBytes bounds the log's name. It is signed, so an unbounded one
 	// would let a log make its own signing message arbitrarily large.
 	maxOriginBytes = 255
@@ -48,6 +54,11 @@ type Checkpoint struct {
 	// could not be pinned to a time could hand a reader an old head forever.
 	Time      string `json:"time"`
 	Signature string `json:"signature"`
+	// Cosignatures are witnesses' statements about this same head. They are
+	// necessarily outside the log's own signature -- they are made after it --
+	// which is why a reader counts them against a pinned key set rather than
+	// treating them as part of what the log said. See witness.go.
+	Cosignatures []Cosignature `json:"cosignatures,omitempty"`
 }
 
 // SignedCheckpoint is a checkpoint whose signature has been verified.
